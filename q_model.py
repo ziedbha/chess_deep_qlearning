@@ -4,6 +4,8 @@ from tensorflow import keras
 from keras.layers import Dense,Flatten,Reshape,Multiply
 from keras.layers.convolutional import Conv2D
 import random
+from collections import deque
+from collections import namedtuple 
 
 from chess_env import *
 
@@ -15,17 +17,39 @@ num_actions = 64 * 64
 # # This is partially done
 # Remove convolutions, why do we need the network to focus on neighborhood information?
 
+class ChessBrain():
+    ChessMemory = namedtuple('ChessMemory', ['current_board', 'current_legal_moves', 'next_board', 'next_legal_moves', 'action', 'reward', 'done'])
+    def __init__(self):
+        self.replay_memory = deque(maxlen=100_000)
+        self.min_replay_memory = 300
+    
+    def add(self, memory):
+        self.replay_memory.append(memory)
+
+    def get(self, index):
+        return self.replay_memory[index]
+    
+    def big_enough(self):
+        return len(self.replay_memory) > self.min_replay_memory
+
+    def sample_newest(self, n):
+        return [*range(len(self.replay_memory) - n, len(self.replay_memory))]
+
+    def sample_random(self, n):
+        return np.random.choice(len(self.replay_memory), n).tolist()
+
 class Q_model():
     def __init__(self):
         self.model = self.create_q_model()
+        self.chess_brain = ChessBrain()
 
     def create_q_model(self):
         weight_learning_rate = 0.001
         init = tf.keras.initializers.HeUniform(42)
 
         # 8x8 board with 12 piece types
-        state = keras.Input(shape=(8, 8, 12))
-        legal_move_mask = keras.Input(shape=(num_actions))
+        state = keras.Input(shape=(8, 8, 12), name='input_board')
+        legal_move_mask = keras.Input(shape=(num_actions), name='input_legal_moves_mask')
        
         # Convolutions on the frames on the screen 
         x = Conv2D(filters=64,padding="same",kernel_size = 2,strides = (2,2), activation='relu', kernel_initializer=init)(state)
@@ -84,45 +108,45 @@ class Q_model():
         move = num2move[action]
         return move,action
 
-    def train(self, replay_memory, model, target_model, done):
-        # Replay memory:
-        # State, action, reward, new state, done
+    def train(self, model, target_model, done):
         learning_rate = 0.90 # Learning rate
         discount_factor = 0.99
 
-        MIN_REPLAY_SIZE = 1000
-        if len(replay_memory) < MIN_REPLAY_SIZE:
+        batch_size = 64 * 2
+        if not self.chess_brain.big_enough():
             return
 
-        batch_size = 64 * 2
         mini_batch = None
         if done:
-            mini_batch = [*range(len(replay_memory) - batch_size - 1, len(replay_memory))]
+            mini_batch = self.chess_brain.sample_newest(batch_size)
         else:
-            mini_batch1 = [*range(len(replay_memory) - int(batch_size/2), len(replay_memory))]
-            mini_batch2 = np.random.choice(len(replay_memory), int(batch_size / 2)).tolist()
+            mini_batch1 = self.chess_brain.sample_newest(int(batch_size/2))
+            mini_batch2 = self.chess_brain.sample_random(int(batch_size/2))
             mini_batch = mini_batch1 + mini_batch2
 
-        # TODO: tensorflow crash
-        current_states = np.array([replay_memory[idx][0] for idx in mini_batch])
-        current_qs_list = model.predict(current_states)
+        current_boards = np.array([self.chess_brain.get(idx).current_board for idx in mini_batch])
+        current_legal_moves = np.array([self.chess_brain.get(idx).current_legal_moves for idx in mini_batch])
+        current_qs_list = model.predict([current_boards, current_legal_moves], batch_size=batch_size)
 
-        new_current_states = np.array([replay_memory[idx][3] for idx in mini_batch])
-        future_qs_list = target_model.predict(new_current_states)
+        next_boards = np.array([self.chess_brain.get(idx).next_board for idx in mini_batch])
+        next_legal_moves = np.array([self.chess_brain.get(idx).next_legal_moves for idx in mini_batch])
+        future_qs_list = target_model.predict([next_boards, next_legal_moves], batch_size=batch_size)
         
-        X = []
+        X1 = []
+        X2 = []
         Y = []
         # Optimize this loop
         for idx, replay_index in enumerate(mini_batch):
-            (state, action, reward, _, done) = replay_memory[replay_index]
+            memory =  self.chess_brain.get(replay_index)
             if not done:
-                max_future_q = reward + discount_factor * np.max(future_qs_list[idx])
+                max_future_q = memory.reward + discount_factor * np.max(future_qs_list[idx])
             else:
-                max_future_q = reward
+                max_future_q = memory.reward
 
             current_qs = current_qs_list[idx]
-            current_qs[action] = (1 - learning_rate) * current_qs[action] + learning_rate * max_future_q
+            current_qs[memory.action] = (1 - learning_rate) * current_qs[memory.action] + learning_rate * max_future_q
 
-            X.append(state)
+            X1.append(memory.current_board)
+            X2.append(memory.current_legal_moves)
             Y.append(current_qs)
-        return model.fit(np.array(X), np.array(Y), batch_size=batch_size, verbose=0, shuffle=True)
+        return model.fit({'input_board': np.array(X1), 'input_legal_moves_mask':  np.array(X2)}, np.array(Y), batch_size=batch_size, verbose=0, shuffle=True)

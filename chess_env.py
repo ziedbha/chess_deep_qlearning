@@ -81,11 +81,15 @@ class ChessEnv():
         self.board = chess.Board()
         legal_moves = self.get_legal_moves_mask()
         return [np.array(translate_board(self.board)), legal_moves]
+
+    def get_game_moves(self):
+        return self.board.move_stack
     
     # Advance board state by taking an action
     def step(self, action, is_source_model = True):
         reward = 0
         done = False
+        is_checkmate = False
 
         # Rewards for taking pieces
         if self.board.is_capture(action):
@@ -107,6 +111,7 @@ class ChessEnv():
         next_legal_moves = self.get_legal_moves_mask()
         
         if self.board.is_checkmate():
+            is_checkmate = True
             reward = 100
 
         if self.board.is_game_over():
@@ -118,4 +123,4 @@ class ChessEnv():
 
         reward += REWARD_OFFSET
         
-        return [next_board, next_legal_moves], reward, done
+        return [next_board, next_legal_moves], reward, done, is_checkmate
