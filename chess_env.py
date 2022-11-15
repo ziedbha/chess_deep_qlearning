@@ -93,17 +93,20 @@ class ChessEnv():
 
         # Rewards for taking pieces
         if self.board.is_capture(action):
-            piece_type = self.board.piece_at(action.to_square).piece_type
-            if piece_type == chess.PAWN:
+            if self.board.is_en_passant(action):
                 reward = 1
-            if piece_type == chess.ROOK:
-                reward = 5
-            if piece_type == chess.BISHOP:
-                reward = 3.5
-            if piece_type == chess.KNIGHT:
-                reward = 3
-            if piece_type == chess.QUEEN:
-                reward = 9
+            else:
+                piece_type = self.board.piece_at(action.to_square).piece_type
+                if piece_type == chess.PAWN:
+                    reward = 1
+                if piece_type == chess.ROOK:
+                    reward = 5
+                if piece_type == chess.BISHOP:
+                    reward = 3.5
+                if piece_type == chess.KNIGHT:
+                    reward = 3
+                if piece_type == chess.QUEEN:
+                    reward = 9
 
         # Advance board state
         self.board.push(action)
