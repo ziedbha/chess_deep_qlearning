@@ -23,6 +23,27 @@ def replay_game(filename):
     with open(filename, 'rb') as f:
         move_stack = pickle.load(f)
 
+def play_source_model_turn(epsilon):
+    # 1. Explore using the Epsilon Greedy Exploration Strategy
+    random_number = np.random.rand()
+    if random_number <= epsilon:
+        # Explore
+        chess_move, action = model.explore(env, False)
+    else:
+        # Exploit best known action
+        chess_move, action = model.predict_and_pick_best(env)
+
+    # 2.a. Step the environment using chosen action
+    new_state, reward, done, is_win = env.step(chess_move, True)
+    return new_state, action, reward, done, is_win
+
+def play_target_model_turn():
+    # Target model picks the best move it thinks about
+    chess_move_other, _ = target_model.predict_and_pick_best(env)
+    new_state, reward_other, done, is_loss = env.step(chess_move_other, False)
+    # is_loss is relative to the source model
+    return new_state, reward_other, done, is_loss
+    
 if train:
     np.random.seed(42)
 
@@ -48,9 +69,7 @@ if train:
 
     # An episode is a full game
     train_episodes = 1000
-
     num_trained_frames = 0
-
     wins = 0
     losses = 0
     draws = 0
@@ -58,56 +77,57 @@ if train:
     # Have we updated the network weights since the last time we dumped to disk?
     updates_since_dump = 1
 
+    # Is source model playing white?
+    source_goes_first = False
+
     for episode in range(train_episodes):
         total_training_rewards = 0
         state = env.reset()
         done = False
         iterations_in_episode = 0
+
+        # Swap turns so that network learns both white and black sides
+        source_goes_first = not source_goes_first
+        if (not source_goes_first):
+            # Game can never end on turn 1
+            play_target_model_turn()
+    
         while not done:
             iterations_in_episode += 1
             steps_to_update_target_model += 1
-            random_number = np.random.rand()
 
-            # 2. Explore using the Epsilon Greedy Exploration Strategy
-            if random_number <= epsilon:
-                # Explore
-                chess_move, action = model.explore(env, False)
-            else:
-                # Exploit best known action
-                chess_move, action = model.predict_and_pick_best(env)
-
-            # Step the environment using chosen action
             is_win = False
             is_loss = False
             is_draw = False
-            new_state, reward, done, is_win = env.step(chess_move, True)
+
+            # 1.a. Play source turn
+            new_state, action, reward, done, is_win = play_source_model_turn(epsilon)
             total_training_rewards += reward - REWARD_OFFSET
-            if (is_win):
-                dump_game(env.get_game_moves(), episode, steps_to_update_target_model, 'win')
-                wins += 1
 
-            # Jump to adversary's turn if possible
+            # 1.b. Play target turn if game is not over yet
             if not done:
-                chess_move_other, action_other = target_model.predict_and_pick_best(env)
-                new_state, reward_other, done, is_loss = env.step(chess_move_other, False)
-                reward += reward_other
-                total_training_rewards += reward_other - REWARD_OFFSET
-                if (is_loss):
-                    dump_game(env.get_game_moves(), episode, steps_to_update_target_model, 'loss')
+                new_state, reward, done, is_loss = play_target_model_turn()
+                total_training_rewards += reward - REWARD_OFFSET
+                    
+            # 2. Record end game state 
+            if done:
+                if (is_win):
+                    dump_game(env.get_game_moves(), episode, iterations_in_episode, 'win')
+                    wins += 1
+                elif is_loss:
+                    dump_game(env.get_game_moves(), episode, iterations_in_episode, 'loss')
                     losses += 1
-
-            # Record if draw
-            if done and (not is_loss) and (not is_win):
-                is_draw = True
-                draws += 1
+                else:
+                    is_draw = True
+                    draws += 1
             
-            # Record the new memory
+            # 3. Record the new memory
             model.chess_brain.add(ChessBrain.ChessMemory(state[0], state[1], new_state[0], new_state[1], action, reward, done))
             
             # Board state moves to new state
             state = new_state
 
-            # 3. Update the Main Network using the Bellman Equation
+            # 4. Update the Main Network using the Bellman Equation
             if steps_to_update_target_model % 4 == 0 or done:
                 training_history = model.train(model.model, target_model.model, done)
                 if training_history is not None:
@@ -115,7 +135,7 @@ if train:
                         tf.summary.scalar('loss', training_history.history['loss'][0], step=num_trained_frames)
                     num_trained_frames += 1
 
-            # 4. Game is done, possibly record weights
+            # 5. Game is done, possibly record new weights
             if done:
                 print('Total training rewards this episode = {} after n steps = {}.'.format(total_training_rewards, episode))
                 if (is_win):
