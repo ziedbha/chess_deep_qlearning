@@ -4,13 +4,117 @@ import chess.engine
 import tensorflow as tf
 import chess.svg
 
-MAX_REWARD = 1000 + 9 + 1 * 12 + 3.5 * 2 + 5 * 2 + 3 * 2
+rewards = { 'loss': -1000, 'win_10':1000,  'win_20':500, 'win_50':100, 'win_100':50, 'win_other':25,
+            'pawn':1, 'knight':3,'bishop':3.5,'rook':5,'queen':9,'en_passant':1}
 
-num_actions = 64 * 64 + 16 + 16
+# def get_max_reward():
+#     return rewards['win_10'] + 8 * rewards['pawn'] + 2 * (rewards['rook'] + rewards['bishop'] + rewards['knight']) + rewards['queen']
+
+# def get_min_reward():
+#     return rewards['loss'] - 8 * rewards['pawn'] - 2 * (rewards['rook'] + rewards['bishop'] + rewards['knight']) - rewards['queen']
+
+# MAX_REWARD = get_max_reward()
+# MIN_REWARD = get_min_reward() - 1
+
+# REWARD_RANGE = MAX_REWARD - MIN_REWARD
+
+# def normalize_rewards_in_sigmoid_range():
+#     for reward in rewards:
+#         rewards[reward] = (rewards[reward] + (-MIN_REWARD)) / REWARD_RANGE
+
+# normalize_rewards_in_sigmoid_range()
+
+ILLEGAL_ACTION_LOGITS_PENALTY = -1e6
+
+# Theoretically: 64x64 from->to moves, ((8 non-capture promotions, 6*2 capture promotions, 2 edge capture promotions) to queen or knight, for white and black)
+num_actions = 0
+
+num2move = {}
+move2num = {}
+counter = 0
+
+# Possible moves
+for from_sq in range(64):
+    for to_sq in range(64):
+        num2move[counter] = chess.Move(from_sq,to_sq)
+        move2num[chess.Move(from_sq,to_sq)] = counter
+        counter += 1
+
+# Possible promotions (non-capture)
+for i in range(8):
+    black_from_sq = i + 1 * 8
+    black_to_sq = i
+
+    white_from_sq = i + 8 * 6
+    white_to_sq = i + 8 * 7
+
+    q_black = chess.Move(black_from_sq, black_to_sq, chess.QUEEN)
+    q_white = chess.Move(white_from_sq, white_to_sq, chess.QUEEN)
+    k_black = chess.Move(black_from_sq, black_to_sq, chess.KNIGHT)
+    k_white = chess.Move(white_from_sq, white_to_sq, chess.KNIGHT)
+
+    num2move[counter] = q_black
+    move2num[q_black] = counter
+    counter += 1
+
+    num2move[counter] = q_white
+    move2num[q_white] = counter
+    counter += 1
+
+    num2move[counter] = k_black
+    move2num[k_black] = counter
+    counter += 1
+
+    num2move[counter] = k_white
+    move2num[k_white] = counter
+    counter += 1
+
+# Black capture promotions
+bound_low = 8 * 0 # back rank start
+bound_high = bound_low + 8 - 1 # back rank end
+for i in range(8):
+    black_from_sq = i + 1 * 8
+    for offset in [-1, 1]:
+        black_to_sq = i + offset
+        if (black_to_sq >= bound_low and black_to_sq <= bound_high):
+            k_black = chess.Move(black_from_sq, black_to_sq, chess.KNIGHT)
+            q_black = chess.Move(black_from_sq, black_to_sq, chess.QUEEN)
+
+            num2move[counter] = k_black
+            move2num[k_black] = counter
+            counter += 1
+
+            num2move[counter] = q_black
+            move2num[q_black] = counter
+            counter += 1
+
+# White capture promotions
+bound_low = 8 * 7 # back rank start
+bound_high = bound_low + 8 - 1 # back rank end
+for i in range(8):
+    white_from_sq = i + 8 * 6
+    for offset in [-1, 1]:
+        white_to_sq = i + 8 * 7 + offset
+        if (white_to_sq >= bound_low and white_to_sq <= bound_high):
+            k_white = chess.Move(white_from_sq, white_to_sq, chess.KNIGHT)
+            q_white = chess.Move(white_from_sq, white_to_sq, chess.QUEEN)
+
+            num2move[counter] = k_white
+            move2num[k_white] = counter
+            counter += 1
+
+            num2move[counter] = q_white
+            move2num[q_white] = counter
+            counter += 1
+
+num_actions = len(move2num)
+
+# Use this to debug a board if needed
+example_board = chess.Board('5bnr/4k2P/6KP/p1r5/P7/8/8/8 w - - 1 145')
 
 # Filter legal moves
 def filter_legal_moves(board):
-    filter_mask =  np.ones(shape=(num_actions)) * (-MAX_REWARD)
+    filter_mask =  np.ones(shape=(num_actions)) * ILLEGAL_ACTION_LOGITS_PENALTY
     # Fast but inaccurate
     # legal_moves = list(board.legal_moves)
     # for legal_move in legal_moves:
@@ -41,46 +145,6 @@ def filter_legal_moves(board):
         if board.is_legal(num2move[move_idx]):
             filter_mask[move_idx] = 0
     return filter_mask
-
-num2move = {}
-move2num = {}
-counter = 0
-
-# Possible moves
-for from_sq in range(64):
-    for to_sq in range(64):
-        num2move[counter] = chess.Move(from_sq,to_sq)
-        move2num[chess.Move(from_sq,to_sq)] = counter
-        counter += 1
-
-# Possible promotions
-for i in range(8):
-    black_from_sq = i + 1 * 8
-    black_to_sq = i
-
-    white_from_sq = i + 8 * 6
-    white_to_sq = i + 8 * 7
-
-    q_black = chess.Move(black_from_sq, black_to_sq, chess.QUEEN)
-    q_white = chess.Move(white_from_sq, white_to_sq, chess.QUEEN)
-    k_black = chess.Move(black_from_sq, black_to_sq, chess.KNIGHT)
-    k_white = chess.Move(white_from_sq, white_to_sq, chess.KNIGHT)
-
-    num2move[counter] = q_black
-    move2num[q_black] = counter
-    counter += 1
-
-    num2move[counter] = q_white
-    move2num[q_white] = counter
-    counter += 1
-
-    num2move[counter] = k_black
-    move2num[k_black] = counter
-    counter += 1
-
-    num2move[counter] = k_white
-    move2num[k_white] = counter
-    counter += 1
 
 def translate_board(board): 
     pgn = board.epd()
@@ -141,27 +205,29 @@ class ChessEnv():
     def checkmate_reward(self):
         num_turns = self.board.fullmove_number * 2
         if num_turns < 10:
-            return 1000
+            return rewards['win_10']
+        if num_turns < 20:
+            return rewards['win_20']
         if num_turns < 50:
-            return 500
+            return rewards['win_50']
         if num_turns < 100:
-            return 100
-        if num_turns < 150:
-            return 75
-        if num_turns < 200:
-            return 50
-        return 20
+            return rewards['win_100']
+        return rewards['win_other']
 
     def get_board(self):
         return self.board
     
     # Advance board state by taking an action
-    def step(self, action, is_source_model = True):
+    def step(self, action,  target_model, model, is_source_model = True):
         reward = 0
         done = False
         is_checkmate = False
 
         if not self.board.is_legal(action):
+            if not is_source_model:
+                target_model.predict_and_pick_best(self)
+            else:
+                model.predict_and_pick_best(self)
             legal_moves = filter_legal_moves(self.board)
             print("Illegal move!")
 
@@ -172,25 +238,24 @@ class ChessEnv():
         # Rewards for taking pieces
         if self.board.is_capture(action):
             if self.board.is_en_passant(action):
-                reward += 1
+                reward += rewards['en_passant']
             else:
                 piece_type = self.board.piece_at(action.to_square).piece_type
                 if piece_type == chess.PAWN:
-                    reward += 1
+                    reward += rewards['pawn']
                 if piece_type == chess.ROOK:
-                    reward += 5
+                    reward += rewards['rook']
                 if piece_type == chess.BISHOP:
-                    reward += 3.5
+                    reward += rewards['bishop']
                 if piece_type == chess.KNIGHT:
-                    reward += 3
+                    reward += rewards['knight']
                 if piece_type == chess.QUEEN:
-                    reward += 9
+                    reward += rewards['queen']
 
         # Advance board state
         self.board.push(action)
         next_board = translate_board(self.board)
         next_legal_moves = self.get_legal_moves_mask()
-
         
         if self.board.is_checkmate():
             is_checkmate = True
@@ -202,7 +267,7 @@ class ChessEnv():
         # Negative reward if not source_model
         if not is_source_model:
             if is_checkmate:
-                reward = -1000
+                reward = rewards['loss']
             else:
                 reward = reward * -1
         

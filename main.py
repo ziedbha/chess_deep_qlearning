@@ -18,8 +18,11 @@ load_previous_checkpoint = False
 start_episode = 30
 old_model_weights = './checkpoints/chess_model_weights_episode_30.h5'
 
-def dump_game(moves, episode, iter, result):
-    filename = './games/episode_' + str(episode) + '_iter_' + str(iter) + '_' + result + '.pkl'
+def dump_game(moves, episode, iter, is_white, result):
+    player_id = "white"
+    if not is_white:
+        player_id = "black"
+    filename = './games/episode_' + str(episode) + '_iter_' + str(iter) + '_' + player_id + '_' + result + '.pkl'
     with open(filename, 'wb') as f:
         pickle.dump(moves, f)
 
@@ -34,13 +37,13 @@ def play_source_model_turn(epsilon):
         chess_move, action = model.predict_and_pick_best(env)
 
     # 2.a. Step the environment using chosen action
-    new_state, reward, done, is_win = env.step(chess_move, True)
+    new_state, reward, done, is_win = env.step(chess_move,target_model, model, True)
     return new_state, action, reward, done, is_win
 
 def play_target_model_turn():
     # Target model picks the best move it thinks about
     chess_move_other, _ = target_model.predict_and_pick_best(env)
-    new_state, reward_other, done, is_loss = env.step(chess_move_other, False)
+    new_state, reward_other, done, is_loss = env.step(chess_move_other, target_model, model, False)
     # is_loss is relative to the source model
     return new_state, reward_other, done, is_loss
     
@@ -57,7 +60,7 @@ if train:
     epsilon = 1 # Epsilon-greedy algorithm in initialized at 1 meaning every step is random at the start
     max_epsilon = 1 # You can't explore more than 100% of the time
     min_epsilon = 0.01 # At a minimum, we'll always explore 1% of the time
-    decay = 0.0005 # We would explore close to min after ~5000 games
+    decay = 0.005 # We would explore close to min after ~5000 games
 
     # 1. Initialize the Target and Main models
     target_model.model.set_weights(model.model.get_weights())
@@ -117,10 +120,10 @@ if train:
             # 2. Record end game state 
             if done:
                 if (is_win):
-                    dump_game(env.get_game_moves(), episode, iterations_in_episode, 'win')
+                    dump_game(env.get_game_moves(), episode, iterations_in_episode, source_goes_first, 'win')
                     wins += 1
                 elif is_loss:
-                    dump_game(env.get_game_moves(), episode, iterations_in_episode, 'loss')
+                    dump_game(env.get_game_moves(), episode, iterations_in_episode, source_goes_first, 'loss')
                     losses += 1
                 else:
                     is_draw = True
@@ -165,7 +168,7 @@ if train:
                 break
         epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(-decay * episode)
 else:
-    source_episode = './checkpoints/chess_model_weights_episode_30.h5'
+    source_episode = './checkpoints/chess_model_weights_episode_530.h5'
     model.model.load_weights(source_episode)
 
     random_opponent = True
@@ -192,15 +195,16 @@ else:
             else:
                 chess_move, _ = target_model.explore(env, False)
             
-            _, _, done, is_checkmate = env.step(chess_move, source_turn)
+            _, _, done, is_checkmate = env.step(chess_move, target_model, model, source_turn)
             if done:
                 if is_checkmate and source_turn:
                     wins += 1
                     print("Checkmate! win.")
-                    # dump_game(env.get_game_moves(), episode, turns, "win_test")
+                    dump_game(env.get_game_moves(), episode, turns, was_white, "win_test")
                 elif is_checkmate and not source_turn:
                     losses += 1
                     print("Checkmate.. loss.")
+                    dump_game(env.get_game_moves(), episode, turns, was_white, "loss_test")
                 else:
                     draws += 1
                 games_played += 1

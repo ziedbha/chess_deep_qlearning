@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
-from keras.layers import Dense,Flatten,Add
+from keras.layers import Dense,Flatten,Multiply
 from keras.layers.convolutional import Conv2D
 import random
 from collections import deque
@@ -70,31 +70,36 @@ class Q_model():
 
         # 8x8 board with 12 piece types
         state = keras.Input(shape=(8, 8, 12), name='input_board')
-        legal_move_mask = keras.Input(shape=(num_actions), name='input_legal_moves_mask')
+        #legal_move_mask = keras.Input(shape=(num_actions), name='input_legal_moves_mask')
        
         # Convolutions on the frames on the screen 
-        x = Conv2D(filters=64,padding="same",kernel_size =3,strides = (2,2), activation='sigmoid', kernel_initializer=init)(state)
-        x = Conv2D(filters=128,padding="same",kernel_size=3,strides = (2,2), activation='sigmoid', kernel_initializer=init)(x)
-        x = Conv2D(filters=256,padding="same",kernel_size=4,strides = (2,2), activation='sigmoid', kernel_initializer=init)(x)
+        x = Conv2D(filters=64,padding="same",kernel_size =3,strides = (2,2), activation='tanh', kernel_initializer=init)(state)
+        x = Conv2D(filters=128,padding="same",kernel_size=3,strides = (2,2), activation='tanh', kernel_initializer=init)(x)
+        x = Conv2D(filters=256,padding="same",kernel_size=4,strides = (2,2), activation='tanh', kernel_initializer=init)(x)
         x = Flatten()(x)
 
         # Map q values between 0 --> 1
-        actions_and_q_values = Dense(num_actions, activation = 'relu', kernel_initializer=init)(x)
+        actions_and_q_values = Dense(num_actions, activation = 'linear', kernel_initializer=init)(x)
 
-        # Make illegal moves very low in Q value
-        actions_and_q_values = Add()([actions_and_q_values, legal_move_mask])
+        # Make illegal moves have 0 Q value (lowest)
+       # actions_and_q_values = Multiply()([actions_and_q_values, legal_move_mask])
        
-        model = keras.Model(inputs=[state, legal_move_mask], outputs=actions_and_q_values)
+        model = keras.Model(inputs=state, outputs=actions_and_q_values)
+        #model = keras.Model(inputs=[state, legal_move_mask], outputs=actions_and_q_values)
         model.compile(loss=tf.keras.losses.Huber(), optimizer=tf.keras.optimizers.Adam(learning_rate=weight_learning_rate, beta_1=0.99), metrics=['accuracy'])
         return model
 
     # Predict q values given input: state of board, legal moves mask
     def forward_pass(self, env):
-        legal_moves_mask = tf.convert_to_tensor(env.get_legal_moves_mask())
+        legal_moves_mask = tf.convert_to_tensor(env.get_legal_moves_mask(), dtype=tf.float32)
         legal_moves_mask = tf.expand_dims(legal_moves_mask, 0)
-        state_tensor = tf.convert_to_tensor(env.translate_board())
+        legal_moves_mask_numpy = legal_moves_mask.numpy()
+        state_tensor = tf.convert_to_tensor(env.translate_board(), dtype=tf.float32)
         state_tensor = tf.expand_dims(state_tensor, 0)
-        action_and_q_values = self.model([state_tensor, legal_moves_mask], training=False)
+        #action_and_q_values = self.model([state_tensor, legal_moves_mask], training=False)
+        action_and_q_values = self.model(state_tensor, training=False)
+
+        action_and_q_values = tf.math.add(tf.stop_gradient(action_and_q_values), legal_moves_mask)
         return action_and_q_values[0]
     
     # Predict q values and pick action that leads to highest q value
@@ -158,15 +163,17 @@ class Q_model():
             mini_batch = mini_batch1 + mini_batch2
 
         current_boards = np.array([self.chess_brain.get(idx).current_board for idx in mini_batch])
-        current_legal_moves = np.array([self.chess_brain.get(idx).current_legal_moves for idx in mini_batch])
-        current_qs_list = model.predict([current_boards, current_legal_moves], batch_size=batch_size)
+        #current_legal_moves = np.array([self.chess_brain.get(idx).current_legal_moves for idx in mini_batch])
+        #current_qs_list = model.predict([current_boards, current_legal_moves], batch_size=batch_size)
+        current_qs_list = model.predict(current_boards, batch_size=batch_size)
 
         next_boards = np.array([self.chess_brain.get(idx).next_board for idx in mini_batch])
-        next_legal_moves = np.array([self.chess_brain.get(idx).next_legal_moves for idx in mini_batch])
-        future_qs_list = target_model.predict([next_boards, next_legal_moves], batch_size=batch_size)
+        #next_legal_moves = np.array([self.chess_brain.get(idx).next_legal_moves for idx in mini_batch])
+        #future_qs_list = target_model.predict([next_boards, next_legal_moves], batch_size=batch_size)
+        future_qs_list = target_model.predict(next_boards, batch_size=batch_size)
         
         X1 = []
-        X2 = []
+        #X2 = []
         Y = []
         # Optimize this loop
         for idx, replay_index in enumerate(mini_batch):
@@ -180,7 +187,9 @@ class Q_model():
             current_qs[memory.action] = (1 - learning_rate) * current_qs[memory.action] + learning_rate * max_future_q
 
             X1.append(memory.current_board)
-            X2.append(memory.current_legal_moves)
+            #X2.append(memory.current_legal_moves)
             Y.append(current_qs)
-        fit_obj = model.fit({'input_board': np.array(X1), 'input_legal_moves_mask':  np.array(X2)}, np.array(Y), batch_size=batch_size, verbose=0, shuffle=True)
+        fit_obj = model.fit({'input_board': np.array(X1)}, np.array(Y), batch_size=batch_size, verbose=0, shuffle=True)
+        #fit_obj = model.fit({'input_board': np.array(X1), 'input_legal_moves_mask':  np.array(X2)}, np.array(Y), batch_size=batch_size, verbose=0, shuffle=True)
+        K.clear_session()
         return fit_obj
