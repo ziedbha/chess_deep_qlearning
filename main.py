@@ -4,6 +4,14 @@ import datetime
 import pickle
 import os
 
+# TODOs:
+# Hyper-pramater tuning:
+#   Implement learning rate decay
+#   Lower learning rate decay
+#   Test on 500 games each time, with random agent
+# Do a lot more exploration
+# Change to pytorch
+
 current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 train_log_dir = 'logs/gradient_tape/' + current_time + '/train'
 train_summary_writer = tf.summary.create_file_writer(train_log_dir)
@@ -13,10 +21,16 @@ model = Q_model()
 target_model = Q_model()
 model.model.summary()
 
-train = True
+# Training parameters
+train = False
 load_previous_checkpoint = False
-start_episode = 30
-old_model_weights = './checkpoints/chess_model_weights_episode_30.h5'
+start_episode = 90
+old_model_weights = './checkpoints/chess_model_weights_episode_90.h5'
+
+# Testing parameters
+source_episode = './checkpoints/chess_model_weights_episode_90.h5'
+target_episode = './checkpoints/chess_model_weights_episode_0.h5'
+random_opponent = True
 
 def dump_game(moves, episode, iter, is_white, result):
     player_id = "white"
@@ -37,15 +51,15 @@ def play_source_model_turn(epsilon):
         chess_move, action = model.predict_and_pick_best(env)
 
     # 2.a. Step the environment using chosen action
-    new_state, reward, done, is_win = env.step(chess_move,target_model, model, True)
-    return new_state, action, reward, done, is_win
+    new_state, reward, done, is_win, is_capture = env.step(chess_move,target_model, model, True)
+    return new_state, action, reward, done, is_win, is_capture
 
 def play_target_model_turn():
     # Target model picks the best move it thinks about
     chess_move_other, _ = target_model.predict_and_pick_best(env)
-    new_state, reward_other, done, is_loss = env.step(chess_move_other, target_model, model, False)
+    new_state, reward_other, done, is_loss, is_capture = env.step(chess_move_other, target_model, model, False)
     # is_loss is relative to the source model
-    return new_state, reward_other, done, is_loss
+    return new_state, reward_other, done, is_loss, is_capture
     
 if train:
     np.random.seed(42)
@@ -60,7 +74,7 @@ if train:
     epsilon = 1 # Epsilon-greedy algorithm in initialized at 1 meaning every step is random at the start
     max_epsilon = 1 # You can't explore more than 100% of the time
     min_epsilon = 0.01 # At a minimum, we'll always explore 1% of the time
-    decay = 0.005 # We would explore close to min after ~5000 games
+    decay = 0.0005
 
     # 1. Initialize the Target and Main models
     target_model.model.set_weights(model.model.get_weights())
@@ -107,14 +121,15 @@ if train:
             is_win = False
             is_loss = False
             is_draw = False
+            is_capture = False
 
             # 1.a. Play source turn
-            new_state, action, reward, done, is_win = play_source_model_turn(epsilon)
+            new_state, action, reward, done, is_win, is_capture = play_source_model_turn(epsilon)
             total_training_rewards += reward
 
             # 1.b. Play target turn if game is not over yet
             if not done:
-                new_state, reward, done, is_loss = play_target_model_turn()
+                new_state, reward, done, is_loss, is_capture = play_target_model_turn()
                 total_training_rewards += reward
                     
             # 2. Record end game state 
@@ -130,7 +145,7 @@ if train:
                     draws += 1
             
             # 3. Record the new memory
-            model.chess_brain.add(ChessBrain.ChessMemory(state[0], state[1], new_state[0], new_state[1], action, reward, done, (is_win or is_loss)))
+            model.chess_brain.add(ChessBrain.ChessMemory(state[0], state[1], new_state[0], new_state[1], action, reward, done, (is_win or is_loss), is_capture))
             
             # Board state moves to new state
             state = new_state
@@ -168,12 +183,8 @@ if train:
                 break
         epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(-decay * episode)
 else:
-    source_episode = './checkpoints/chess_model_weights_episode_530.h5'
     model.model.load_weights(source_episode)
-
-    random_opponent = True
     if not random_opponent:
-        target_episode = './checkpoints/chess_model_weights_episode_0.h5'
         target_model.model.load_weights(target_episode)
 
     test_episodes = 50
@@ -195,7 +206,7 @@ else:
             else:
                 chess_move, _ = target_model.explore(env, False)
             
-            _, _, done, is_checkmate = env.step(chess_move, target_model, model, source_turn)
+            _, _, done, is_checkmate, _ = env.step(chess_move, target_model, model, source_turn)
             if done:
                 if is_checkmate and source_turn:
                     wins += 1

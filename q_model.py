@@ -10,26 +10,21 @@ from keras import backend as K
 
 from chess_env import *
 
-# Worst case num movements pet board state: 64 movements (from) -> (to) on a 8x8 chess board
-num_actions = 64 * 64 + 16 + 16
-
-# TODO:
-# Add movement legality information in input
-# # This is partially done
-# Remove convolutions, why do we need the network to focus on neighborhood information?
-
 class ChessBrain():
-    ChessMemory = namedtuple('ChessMemory', ['current_board', 'current_legal_moves', 'next_board', 'next_legal_moves', 'action', 'reward', 'done', 'is_checkmate'])
+    ChessMemory = namedtuple('ChessMemory', ['current_board', 'current_legal_moves', 'next_board', 'next_legal_moves', 'action', 'reward', 'done', 'is_checkmate', 'is_capture'])
     def __init__(self):
         self.replay_memory = deque(maxlen=100_000)
         self.checkmate_index_memory = deque(maxlen=500)
+        self.capture_index_memory = deque(maxlen=1000)
         self.min_replay_memory = 300
     
     def add(self, memory):
         self.replay_memory.append(memory)
-        # Record this memory's index in the replay memory if it was a checkmate
+        # Record this memory's index in the replay memory if it was a checkmate or a capture
         if memory.is_checkmate:
             self.checkmate_index_memory.append(len(self.replay_memory))
+        if memory.is_capture:
+            self.capture_index_memory.append(len(self.replay_memory))
 
     def get(self, index):
         return self.replay_memory[index]
@@ -39,6 +34,9 @@ class ChessBrain():
 
     def num_checkmates(self):
         return len(self.checkmate_index_memory)
+
+    def num_captures(self):
+        return len(self.capture_index_memory)
 
     def sample_interval(self, start, end):
         return [*range(start, end)]
@@ -59,6 +57,16 @@ class ChessBrain():
         # Sample starting at checkmate index going backwards
         return self.sample_interval(checkmate_memory_idx - n, checkmate_memory_idx)
 
+    def sample_random_capture(self, n):
+        capture_index_memory = self.capture_index_memory[np.random.choice(len(self.capture_index_memory))]
+
+        # If the capture memory is *very* old, make sure to increase the sample start index
+        if capture_index_memory < n:
+            capture_index_memory = n
+
+        # Sample starting at capture index going backwards
+        return self.sample_interval(capture_index_memory - n, capture_index_memory)
+
 class Q_model():
     def __init__(self):
         self.model = self.create_q_model()
@@ -78,7 +86,7 @@ class Q_model():
         x = Conv2D(filters=256,padding="same",kernel_size=4,strides = (2,2), activation='tanh', kernel_initializer=init)(x)
         x = Flatten()(x)
 
-        # Map q values between 0 --> 1
+        # Q values can be arbitrarily large or small, activation needs to be linear
         actions_and_q_values = Dense(num_actions, activation = 'linear', kernel_initializer=init)(x)
 
         # Make illegal moves have 0 Q value (lowest)
@@ -140,27 +148,38 @@ class Q_model():
     def train(self, model, target_model, done):
         learning_rate = 0.90 # Learning rate
         discount_factor = 0.99
+        min_checkmate_samples = 2
+        min_capture_samples = 4
+
+        # 30% checkmates, 50% captures, rest random
+        checkmate_sample_rate = 0.3
+        capture_sample_rate = checkmate_sample_rate + 0.5
 
         batch_size = 64 * 2
         if not self.chess_brain.big_enough():
             return
-        mini_batch = None
+        mini_batch = []
 
         if done:
             # Sample approx this entire game
             mini_batch = self.chess_brain.sample_newest(batch_size)
         else:
-            # Checkmates are few... let's not overtrain
-            smart_sampling_rate = 0.3
-            if np.random.rand() < smart_sampling_rate and self.chess_brain.num_checkmates() > 2:
-                # Sample 2 checkmate memories
-                mini_batch1 = self.chess_brain.sample_random_checkmate(int(batch_size/2))
-                mini_batch2 = self.chess_brain.sample_random_checkmate(int(batch_size/2))
+            # Sample checkmates, captures, or random memories
+            if np.random.rand() < checkmate_sample_rate and self.chess_brain.num_checkmates() > min_checkmate_samples:
+                # Sample checkmate memories
+                for _ in range(0, min_checkmate_samples):
+                    mini_batch_sample = self.chess_brain.sample_random_checkmate(int(batch_size/min_checkmate_samples))
+                    mini_batch = mini_batch + mini_batch_sample
+            elif np.random.rand() < capture_sample_rate and self.chess_brain.num_captures() > min_capture_samples:
+                # Sample capture memories
+                for _ in range(0, min_capture_samples):
+                    mini_batch_sample = self.chess_brain.sample_random_capture(int(batch_size/min_capture_samples))
+                    mini_batch = mini_batch + mini_batch_sample
             else:
                 # Sample half batch new, half batch random
                 mini_batch1 = self.chess_brain.sample_newest(int(batch_size/2))
                 mini_batch2 = self.chess_brain.sample_random(int(batch_size/2))
-            mini_batch = mini_batch1 + mini_batch2
+                mini_batch = mini_batch1 + mini_batch2
 
         current_boards = np.array([self.chess_brain.get(idx).current_board for idx in mini_batch])
         #current_legal_moves = np.array([self.chess_brain.get(idx).current_legal_moves for idx in mini_batch])

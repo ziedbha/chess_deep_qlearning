@@ -222,7 +222,9 @@ class ChessEnv():
         reward = 0
         done = False
         is_checkmate = False
+        is_capture = False
 
+        # Debug illegal moves
         if not self.board.is_legal(action):
             if not is_source_model:
                 target_model.predict_and_pick_best(self)
@@ -237,20 +239,23 @@ class ChessEnv():
 
         # Rewards for taking pieces
         if self.board.is_capture(action):
+            is_capture = True
             if self.board.is_en_passant(action):
                 reward += rewards['en_passant']
             else:
                 piece_type = self.board.piece_at(action.to_square).piece_type
                 if piece_type == chess.PAWN:
                     reward += rewards['pawn']
-                if piece_type == chess.ROOK:
+                elif piece_type == chess.ROOK:
                     reward += rewards['rook']
-                if piece_type == chess.BISHOP:
+                elif piece_type == chess.BISHOP:
                     reward += rewards['bishop']
-                if piece_type == chess.KNIGHT:
+                elif piece_type == chess.KNIGHT:
                     reward += rewards['knight']
-                if piece_type == chess.QUEEN:
+                elif piece_type == chess.QUEEN:
                     reward += rewards['queen']
+                else:
+                    raise ValueError('Illegal capture!')
 
         # Advance board state
         self.board.push(action)
@@ -271,4 +276,4 @@ class ChessEnv():
             else:
                 reward = reward * -1
         
-        return [next_board, next_legal_moves], reward, done, is_checkmate
+        return [next_board, next_legal_moves], reward, done, is_checkmate, is_capture
