@@ -218,7 +218,7 @@ class ChessEnv():
         return self.board
     
     # Advance board state by taking an action
-    def step(self, action,  target_model, model, is_source_model = True):
+    def step(self, action, is_source_model = True):
         reward = 0
         done = False
         is_checkmate = False
@@ -226,10 +226,10 @@ class ChessEnv():
 
         # Debug illegal moves
         if not self.board.is_legal(action):
-            if not is_source_model:
-                target_model.predict_and_pick_best(self)
-            else:
-                model.predict_and_pick_best(self)
+            # if not is_source_model:
+            #     target_model.predict_and_pick_best(self)
+            # else:
+            #     model.predict_and_pick_best(self)
             legal_moves = filter_legal_moves(self.board)
             print("Illegal move!")
 

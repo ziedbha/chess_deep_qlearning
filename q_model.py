@@ -71,9 +71,10 @@ class Q_model():
     def __init__(self):
         self.model = self.create_q_model()
         self.chess_brain = ChessBrain()
+        self.bellman_alpha = 1e-5
 
     def create_q_model(self):
-        weight_learning_rate = 0.9
+        self.weight_learning_rate = 1e-4
         init = tf.keras.initializers.HeUniform(42)
 
         # 8x8 board with 12 piece types
@@ -94,7 +95,7 @@ class Q_model():
        
         model = keras.Model(inputs=state, outputs=actions_and_q_values)
         #model = keras.Model(inputs=[state, legal_move_mask], outputs=actions_and_q_values)
-        model.compile(loss=tf.keras.losses.Huber(), optimizer=tf.keras.optimizers.Adam(learning_rate=weight_learning_rate, beta_1=0.99), metrics=['accuracy'])
+        model.compile(loss=tf.keras.losses.Huber(), optimizer=tf.keras.optimizers.Adam(learning_rate=self.weight_learning_rate, beta_1=0.99), metrics=['accuracy'])
         return model
 
     # Predict q values given input: state of board, legal moves mask
@@ -119,7 +120,6 @@ class Q_model():
         return move,action
     
     # Randomly pick action, or predict and add noise on predictions (smart prediction)
-    # TODO: need the
     def explore(self, env, smart_explore=False):
         action_space = None
         if smart_explore:
@@ -145,9 +145,18 @@ class Q_model():
         move = num2move[action]
         return move,action
 
-    def train(self, model, target_model, done):
-        learning_rate = 0.90 # Learning rate
-        discount_factor = 0.99
+    def unload(self):
+        K.clear_session()
+
+    def change_optimizer(self, weight_learning_rate):
+        self.weight_learning_rate = weight_learning_rate
+        self.model.optimizer = tf.keras.optimizers.Adam(learning_rate=weight_learning_rate, beta_1=0.99)
+
+    def change_bellman_learning_rate(self, alpha):
+        self.bellman_alpha = alpha
+
+    def train(self, target_model, done):
+        discount_factor = 0.8
         min_checkmate_samples = 2
         min_capture_samples = 4
 
@@ -184,7 +193,7 @@ class Q_model():
         current_boards = np.array([self.chess_brain.get(idx).current_board for idx in mini_batch])
         #current_legal_moves = np.array([self.chess_brain.get(idx).current_legal_moves for idx in mini_batch])
         #current_qs_list = model.predict([current_boards, current_legal_moves], batch_size=batch_size)
-        current_qs_list = model.predict(current_boards, batch_size=batch_size)
+        current_qs_list = self.model.predict(current_boards, batch_size=batch_size)
 
         next_boards = np.array([self.chess_brain.get(idx).next_board for idx in mini_batch])
         #next_legal_moves = np.array([self.chess_brain.get(idx).next_legal_moves for idx in mini_batch])
@@ -203,12 +212,11 @@ class Q_model():
                 max_future_q = memory.reward
 
             current_qs = current_qs_list[idx]
-            current_qs[memory.action] = (1 - learning_rate) * current_qs[memory.action] + learning_rate * max_future_q
+            current_qs[memory.action] = (1 - self.bellman_alpha) * current_qs[memory.action] + self.bellman_alpha * max_future_q
 
             X1.append(memory.current_board)
             #X2.append(memory.current_legal_moves)
             Y.append(current_qs)
-        fit_obj = model.fit({'input_board': np.array(X1)}, np.array(Y), batch_size=batch_size, verbose=0, shuffle=True)
+        fit_obj = self.model.fit({'input_board': np.array(X1)}, np.array(Y), batch_size=batch_size, verbose=0, shuffle=True)
         #fit_obj = model.fit({'input_board': np.array(X1), 'input_legal_moves_mask':  np.array(X2)}, np.array(Y), batch_size=batch_size, verbose=0, shuffle=True)
-        K.clear_session()
         return fit_obj
